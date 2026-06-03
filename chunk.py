@@ -39,11 +39,11 @@ META = {
     "classifier_23":      ("open-system-classifiers", 2023),
     "dqnn_20":            ("qnn-trainability",        2020),
     "dqnn_train_22":      ("qnn-trainability",        2022),
+    "barren_plat_25":     ("qnn-trainability",        2025),
     "boson_reservoir_25": ("reservoir-computing",     2025),
     "qrc_24":             ("reservoir-computing",     2024),
     "qrp_24":             ("reservoir-computing",     2024),
     "pqc":                ("foundational-ml",         2019),
-    "q_graddesc":         ("foundational-ml",         2019),
 }
 
 _tok = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -62,10 +62,14 @@ _SUPSUB_RE = re.compile(r"</?su[bp]>")
 # Markdown links — keep the visible text, drop the (url) part. Handles the
 # escaped-bracket citation form Marker emits, e.g. [\[1\]](#page-14-0) -> [1].
 _MDLINK_RE = re.compile(r"\[([^\]]*)\]\((?:#|https?:|mailto:)[^)]*\)")
-# Leftover escaped brackets from citation text:  \[ \]
-_ESC_BRACKET_RE = re.compile(r"\\([\[\]])")
+# Leftover escaped brackets/parens from citation text:  \[ \] \( \)
+_ESC_BRACKET_RE = re.compile(r"\\([\[\]()])")
 # Inline numeric citation markers like [12] or [1, 3] or [1–7] (not md links).
-_CITATION_RE = re.compile(r"\[\s*\d+(?:\s*[,–\-]\s*\d+)*\s*\](?!\()")
+# Also catches residue like "[ 292, ]" or "[ 294 – ]" left when some inner
+# numbers were already stripped — i.e. brackets holding only digits/punctuation.
+_CITATION_RE = re.compile(r"\[\s*\d[\d\s,–\-]*\](?!\()")
+# Empty or punctuation-only brackets left after the above:  [ ] , [ , ]
+_EMPTY_BRACKET_RE = re.compile(r"\[\s*[,–\-]*\s*\]")
 # Bare internal anchors left behind:  (#page-2-0)
 _ANCHOR_RE = re.compile(r"\(#[^)]*\)")
 
@@ -87,11 +91,22 @@ def _clean(text: str) -> str:
     text = _SPAN_RE.sub("", text)
     text = _SUPSUB_RE.sub("", text)
     text = _CITATION_RE.sub("", text)
+    text = _EMPTY_BRACKET_RE.sub("", text)
     # Tidy spacing left by removals.
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" +([.,;:)])", r"\1", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _clean_title(title: str) -> str:
+    """Strip span anchors / markdown links from a heading to get clean text."""
+    title = _SPAN_RE.sub("", title)
+    title = _MDLINK_RE.sub(r"\1", title)
+    title = _SUPSUB_RE.sub("", title)
+    title = _ANCHOR_RE.sub("", title)
+    title = re.sub(r"\s{2,}", " ", title)
+    return title.strip() or "Untitled"
 
 
 def split_sections(md_text: str) -> list[tuple[str, str]]:
@@ -112,7 +127,7 @@ def split_sections(md_text: str) -> list[tuple[str, str]]:
         sections.append(("Preamble", pre))
 
     for i, m in enumerate(matches):
-        title = m.group(2).strip() or "Untitled"
+        title = _clean_title(m.group(2))
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
         body = md_text[start:end].strip()
@@ -121,25 +136,122 @@ def split_sections(md_text: str) -> list[tuple[str, str]]:
     return sections
 
 
-def _sliding_window(text: str) -> list[str]:
-    """Sub-split an over-long section into <=MAX_TOKENS windows with OVERLAP.
+def _hard_split(text: str) -> list[str]:
+    """Last-resort splitter for a single unit that alone exceeds MAX_TOKENS.
 
-    Operates on token ids, then decodes each window back to text so chunks
-    stay aligned with how the embedding model will see them.
+    Splits on word boundaries and verifies each piece against the real
+    tokenizer, so the 256-token cap holds even for pathological inputs
+    (long equations, URL-like strings) with no sentence punctuation.
     """
-    ids = _tok.encode(text, add_special_tokens=False)
-    step = MAX_TOKENS - OVERLAP
-    windows: list[str] = []
-    for start in range(0, len(ids), step):
-        window_ids = ids[start : start + MAX_TOKENS]
-        if not window_ids:
-            break
-        piece = _tok.decode(window_ids, skip_special_tokens=True).strip()
-        if piece:
-            windows.append(piece)
-        if start + MAX_TOKENS >= len(ids):
-            break
-    return windows
+    words = text.split()
+    pieces: list[str] = []
+    cur: list[str] = []
+    for w in words:
+        cur.append(w)
+        if token_count(" ".join(cur)) > MAX_TOKENS:
+            cur.pop()
+            if cur:
+                pieces.append(" ".join(cur))
+            # If a single word is somehow > MAX_TOKENS, keep it alone.
+            cur = [w] if token_count(w) <= MAX_TOKENS else []
+            if not cur:
+                pieces.append(w[:2000])
+    if cur:
+        pieces.append(" ".join(cur))
+    return pieces
+
+
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
+
+
+def _split_long_section(text: str) -> list[str]:
+    """Pack an over-long section into <=MAX_TOKENS chunks on sentence boundaries.
+
+    Greedy sentence packing keeps chunks as complete thoughts. A trailing
+    OVERLAP-token tail from each emitted chunk is prepended to the next so a
+    claim spanning a boundary stays retrievable. Every emitted chunk is
+    re-measured with the real tokenizer, so the 256 cap is guaranteed.
+    """
+    sentences = _SENT_SPLIT_RE.split(text)
+    chunks: list[str] = []
+    cur = ""
+
+    def overlap_tail(s: str) -> str:
+        ids = _tok.encode(s, add_special_tokens=False)
+        if len(ids) <= OVERLAP:
+            return s
+        return _tok.decode(ids[-OVERLAP:], skip_special_tokens=True)
+
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        # A single sentence longer than the window must be hard-split.
+        if token_count(sent) > MAX_TOKENS:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.extend(_hard_split(sent))
+            continue
+
+        candidate = f"{cur} {sent}".strip() if cur else sent
+        if token_count(candidate) <= MAX_TOKENS:
+            cur = candidate
+        else:
+            chunks.append(cur)
+            cur = f"{overlap_tail(cur)} {sent}".strip()
+            # Overlap may push us over; if so, drop the overlap for this chunk.
+            if token_count(cur) > MAX_TOKENS:
+                cur = sent
+
+    if cur.strip():
+        chunks.append(cur)
+    return chunks
+
+
+def _is_degenerate(text: str) -> bool:
+    """Detect OCR repetition-loop garbage (e.g. 'the second of the second of...').
+
+    Marker occasionally emits a degenerate decode where a short phrase repeats
+    for the whole chunk. Such chunks carry almost no information and pollute
+    retrieval, so we drop them. Heuristic: for a reasonably long chunk, a very
+    low unique-word ratio means near-total repetition.
+    """
+    words = text.split()
+    if len(words) < 30:
+        return False
+    unique_ratio = len(set(w.lower() for w in words)) / len(words)
+    return unique_ratio < 0.18
+
+
+# A bibliography chunk: many publication years and/or numbered citation items,
+# and/or a high density of journal abbreviations. Real prose almost never hits
+# these densities, so this catches reference lists that slipped past the heading
+# filter (some papers merge the bibliography under an Appendix heading with no
+# "References" heading of its own).
+_PUB_YEAR_RE = re.compile(r"\((?:19|20)\d{2}\)")          # (2019)
+_BARE_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")          # 2019
+_CITE_ITEM_RE = re.compile(r"(?m)^\s*-?\s*\[\d+\]\s")      # [12] ...
+_JOURNAL_RE = re.compile(
+    r"Phys\.\s*Rev\.|Nat\.\s*Commun\.|Nature|arXiv:|npj|"
+    r"J\.\s*High\s*Energ|Rev\.\s*Mod\.\s*Phys\.|Quantum\s|PRX",
+)
+
+
+def _is_reference_chunk(text: str) -> bool:
+    pub_years = len(_PUB_YEAR_RE.findall(text))
+    bare_years = len(_BARE_YEAR_RE.findall(text))
+    cite_items = len(_CITE_ITEM_RE.findall(text))
+    journals = len(_JOURNAL_RE.findall(text))
+    # Bibliography fingerprint: several years AND several journal markers, or an
+    # unambiguous run of numbered citation items.
+    if cite_items >= 3:
+        return True
+    if pub_years >= 3:
+        return True
+    if bare_years >= 4 and journals >= 3:
+        return True
+    return False
 
 
 def chunk_document(md_text: str, stem: str) -> list[dict]:
@@ -158,10 +270,10 @@ def chunk_document(md_text: str, stem: str) -> list[dict]:
         if token_count(body) <= MAX_TOKENS:
             pieces = [body]
         else:
-            pieces = _sliding_window(body)
+            pieces = _split_long_section(body)
 
         for piece in pieces:
-            if not piece.strip():
+            if not piece.strip() or _is_degenerate(piece) or _is_reference_chunk(piece):
                 continue
             idx = len(chunks)
             chunks.append(
