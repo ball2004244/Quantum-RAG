@@ -25,12 +25,11 @@ This domain is hard in 2 aspects:
 | 4   | `classifier_23`      | Korkmaz & Türkpençe, _Dissipative learning of a quantum classifier_ (arXiv:2307.12293, 2023). Learning dynamics of the dissipative classifier.                                              | documents/classifier_23.md      |
 | 5   | `dqnn_20`            | Beer et al., _Training deep quantum neural networks_ (Nature Commun. 11:808, 2020). Quantum perceptron = unitary; CP layer maps; fidelity cost; claims **no barren plateau**.               | documents/dqnn_20.md            |
 | 6   | `dqnn_train_22`      | Sharma, Cerezo, Cincio, Coles, _Trainability of Dissipative Perceptron-Based QNNs_ (PRL 128, 180505, 2022). Proves DQNNs **can** have barren plateaus.                                      | documents/dqnn_train_22.md      |
-| 7   | `barren_plat_25`     | Larocca et al., _A Review of Barren Plateaus in Variational Quantum Computing_ (arXiv:2405.00781, 2025). Review article.                                                                    | documents/barren_plat_25.md     |
-| 8   | `boson_reservoir_25` | Sakurai, Hayashi, Munro, Nemoto, _Quantum optical reservoir computing powered by boson sampling_ (Optica Quantum 3(3), 2025). Boson-sampler reservoir; image classification.                | documents/boson_reservoir_25.md |
-| 9   | `qrc_24`             | Ivaki, Lazarides, Ala-Nissila, _Quantum reservoir computing on random regular graphs_ (PRA 112, 012622, 2025).                                                                              | documents/qrc_24.md             |
-| 10  | `qrp_24`             | Kobayashi & Motome, _Quantum reservoir probing_ (arXiv:2308.00898, 2024). Inverse QRC paradigm.                                                                                             | documents/qrp_24.md             |
-| 11  | `pqc`                | Benedetti, Lloyd, Sack, Fiorentini, _Parameterized quantum circuits as machine learning models_ (Quantum Sci. Technol. 4, 2019).                                                            | documents/pqc.md                |
-| 12  | `q_graddesc`         | Rebentrost et al., _Quantum gradient descent and Newton's method for constrained polynomial optimization_ (New J. Phys. 21, 2019).                                                          | documents/q_graddesc.md         |
+| 7   | `boson_reservoir_25` | Sakurai, Hayashi, Munro, Nemoto, _Quantum optical reservoir computing powered by boson sampling_ (Optica Quantum 3(3), 2025). Boson-sampler reservoir; image classification.                | documents/boson_reservoir_25.md |
+| 8   | `qrc_24`             | Ivaki, Lazarides, Ala-Nissila, _Quantum reservoir computing on random regular graphs_ (PRA 112, 012622, 2025).                                                                              | documents/qrc_24.md             |
+| 9  | `qrp_24`             | Kobayashi & Motome, _Quantum reservoir probing_ (arXiv:2308.00898, 2024). Inverse QRC paradigm.                                                                                             | documents/qrp_24.md             |
+| 10  | `pqc`                | Benedetti, Lloyd, Sack, Fiorentini, _Parameterized quantum circuits as machine learning models_ (Quantum Sci. Technol. 4, 2019).                                                            | documents/pqc.md                |
+| 11  | `q_graddesc`         | Rebentrost et al., _Quantum gradient descent and Newton's method for constrained polynomial optimization_ (New J. Phys. 21, 2019).                                                          | documents/q_graddesc.md         |
 
 ---
 
@@ -76,7 +75,7 @@ This domain is hard in 2 aspects:
 
 ## Anticipated Challenges
 
-1. **Conflicting sources → synthesis failure.** The corpus genuinely disagrees on barren plateaus in dissipative QNNs (`dqnn_20` says no; `dqnn_train_22` proves yes; `barren_plat_25` adds a third voice). Top-k retrieval will pull contradictory chunks, and the LLM is likely to present one side confidently rather than flag the disagreement or its conditions. This is the planned failure case.
+1. **Conflicting sources → synthesis failure.** The corpus genuinely disagrees on barren plateaus in dissipative QNNs (`dqnn_20` says no; `dqnn_train_22` proves yes). Top-k retrieval will pull contradictory chunks, and the LLM is likely to present one side confidently rather than flag the disagreement or its conditions. This is the planned failure case.
 2. **Attribution confusion among near-identical papers.** `classifier_19/22/23` share titles, authors, and vocabulary. Semantic search may return the wrong one, and source citations may misattribute the answer — a citation-correctness risk, not just a retrieval one.
 3. **Extraction noise on math/two-column PDFs.** Even with Marker, equations, inline citation markers (`[18]`), and running headers (`arXiv:… [quant-ph]`) can leak into chunks and pollute embeddings.
 4. **Embedding-window truncation.** If a chunk exceeds MiniLM's 256-token limit it is silently truncated, so the tail never gets embedded. Mitigation: enforce the ~256-token cap at chunk time and assert it in code.
