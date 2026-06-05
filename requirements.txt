@@ -12,4 +12,4 @@ marker-pdf>=1.0.0
 # docling>=2.0.0          # fallback converter if marker is slow/painful on this machine
 
 # Stretch — hybrid search (BM25 + semantic):
-# rank-bm25>=0.2.2
+rank-bm25>=0.2.2

@@ -1,11 +1,21 @@
 """Milestone 5 — Grounded generation via Groq.
 
-ask(question, k=5, where=None) -> {answer, sources, chunks}
+ask(question, k=5, where=None) -> {answer, sources, sources_used,
+                                   sources_retrieved, chunks}
 
 Grounding is enforced in the system prompt: the model must answer ONLY from the
 provided context and must emit an exact refusal string when the context is
-insufficient. Source attribution is programmatic (pulled from chunk metadata),
-not left to the LLM.
+insufficient.
+
+Source attribution has two layers:
+  * sources_retrieved — every source in the top-k (what we looked at).
+  * sources_used      — the [Source: ...] tags the model actually cited,
+                        VERIFIED against the retrieved set (hallucinated or
+                        malformed citations are dropped). This is the precise
+                        "which documents the answer drew on" list.
+`sources` aliases sources_used when the model cited valid sources, else falls
+back to sources_retrieved — so attribution is always programmatically guaranteed
+and never invented by the LLM.
 
 CLI:  python query.py "your question here"
       python query.py            (runs the out-of-scope refusal test)
@@ -14,6 +24,7 @@ CLI:  python query.py "your question here"
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 from dotenv import load_dotenv
@@ -25,6 +36,10 @@ load_dotenv()
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 REFUSAL = "I don't have enough information in the retrieved documents to answer that."
+
+# Matches the citation tags we ask the model to emit, e.g.
+#   [Source: dqnn_20 | Section: Results]   or   [Source: dqnn_20]
+_CITE_TAG_RE = re.compile(r"\[Source:\s*([^\]|]+?)\s*(?:\||\])")
 
 SYSTEM_PROMPT = f"""\
 You are a research assistant for quantum machine learning papers.
@@ -57,11 +72,44 @@ def _format_context(chunks: list[dict]) -> str:
     )
 
 
-def ask(question: str, k: int = 5, where: dict | None = None) -> dict:
-    chunks = retrieve(question, k=k, where=where)
+def _verify_citations(answer: str, retrieved: list[str]) -> list[str]:
+    """Extract [Source: X] tags the model emitted and keep only valid ones.
+
+    A citation counts only if its source is actually in the retrieved set, so a
+    model that cites a paper it wasn't given (hallucinated attribution) is
+    filtered out. Order follows first appearance in the answer.
+    """
+    retrieved_set = set(retrieved)
+    used: list[str] = []
+    for raw in _CITE_TAG_RE.findall(answer):
+        src = raw.strip()
+        if src in retrieved_set and src not in used:
+            used.append(src)
+    return used
+
+
+def ask(question: str, k: int = 5, where: dict | None = None,
+        mode: str = "semantic") -> dict:
+    """Answer a question with grounded generation.
+
+    mode: "semantic" (vector search, supports `where` metadata filter) or
+          "hybrid" (BM25 + semantic RRF fusion; ignores `where`).
+    """
+    if mode == "hybrid":
+        from hybrid import hybrid_retrieve
+
+        chunks = hybrid_retrieve(question, k=k)
+    else:
+        chunks = retrieve(question, k=k, where=where)
 
     if not chunks:
-        return {"answer": REFUSAL, "sources": [], "chunks": []}
+        return {
+            "answer": REFUSAL,
+            "sources": [],
+            "sources_used": [],
+            "sources_retrieved": [],
+            "chunks": [],
+        }
 
     context = _format_context(chunks)
     messages = [
@@ -76,10 +124,25 @@ def ask(question: str, k: int = 5, where: dict | None = None) -> dict:
     )
     answer = resp.choices[0].message.content.strip()
 
-    # Programmatic source attribution — deduplicated, retrieval-order preserved.
-    sources = list(dict.fromkeys(c["source"] for c in chunks))
+    # Full retrieved set — deduplicated, retrieval-order preserved.
+    sources_retrieved = list(dict.fromkeys(c["source"] for c in chunks))
 
-    return {"answer": answer, "sources": sources, "chunks": chunks}
+    # Citations the model actually made, verified against the retrieved set.
+    # A refusal cites nothing, so sources_used is naturally empty there.
+    sources_used = _verify_citations(answer, sources_retrieved)
+
+    # Headline attribution: prefer the precise "used" list; fall back to the
+    # full retrieved list if the model cited nothing valid (keeps the guarantee
+    # that attribution is never empty for a real answer).
+    sources = sources_used or sources_retrieved
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "sources_used": sources_used,
+        "sources_retrieved": sources_retrieved,
+        "chunks": chunks,
+    }
 
 
 def main() -> None:
@@ -93,7 +156,10 @@ def main() -> None:
     result = ask(question)
     print(f"Q: {question}\n")
     print("ANSWER:\n" + result["answer"] + "\n")
-    print("SOURCES: " + ", ".join(result["sources"]))
+    print("SOURCES USED (model-cited, verified): "
+          + (", ".join(result["sources_used"]) or "(none)"))
+    print("SOURCES RETRIEVED (top-k): "
+          + ", ".join(result["sources_retrieved"]))
 
 
 if __name__ == "__main__":

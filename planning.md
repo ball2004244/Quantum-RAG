@@ -157,12 +157,3 @@ flowchart LR
 - Expected output: `query.py` with a grounded prompt template + programmatic source attribution, and `app.py` (Gradio). 
 - Verify: confirm the system prompt _enforces_ grounding (refuses an out-of-scope query, e.g. about surface-code error correction), that citations are appended from retrieval metadata (not left to the LLM), and that Q2 exposes the contradiction behavior for the failure write-up.
 
----
-
-## Stretch Features
-
-_Update this section before implementing each one (per the instructions)._ Planned, in priority order:
-
-1. **Hybrid search (BM25 + semantic), +2 pts.** Add a BM25 index over the same chunks; fuse with semantic scores (reciprocal-rank fusion). Hypothesis: keyword matching helps exact-term queries (e.g. "barren plateau," "boson sampling") that MiniLM may under-rank. Compare semantic-only vs hybrid on ≥3 queries.
-2. **Chunking-strategy comparison, +1 pt.** Compare the ~256-token section-aware baseline against other advanced splitter (TBD) on the same 5 questions.
-3. **Metadata filtering, +1 pt.** Allow filtering retrieval by `cluster` (e.g. only "reservoir computing"), `year`, or `source`, and show the effect on results.

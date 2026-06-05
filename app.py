@@ -21,22 +21,26 @@ CLUSTERS = [
 ]
 
 
-def handle_query(question: str, cluster: str):
+def handle_query(question: str, cluster: str, mode: str):
     if not question or not question.strip():
-        return "", ""
+        return "", "", ""
 
-    where = None if cluster == "all" else {"cluster": cluster}
-    result = ask(question, where=where)
+    # Metadata filtering only applies to semantic mode.
+    where = None if (cluster == "all" or mode == "hybrid") else {"cluster": cluster}
+    result = ask(question, where=where, mode=mode)
 
-    sources_text = "\n".join(f"• {s}" for s in result["sources"]) or "(none)"
-    return result["answer"], sources_text
+    used_text = "\n".join(f"• {s}" for s in result["sources_used"]) or "(none cited)"
+    retrieved_text = "\n".join(f"• {s}" for s in result["sources_retrieved"]) or "(none)"
+    return result["answer"], used_text, retrieved_text
 
 
 with gr.Blocks(title="QML Unofficial Guide") as demo:
     gr.Markdown("## QML Research RAG — Unofficial Guide")
     gr.Markdown(
         "Ask a question about the quantum-machine-learning paper corpus. "
-        "Answers are grounded strictly in retrieved chunks, with sources listed."
+        "Answers are grounded strictly in retrieved chunks. **Cited by answer** "
+        "lists the sources the model actually used (verified against retrieval); "
+        "**Retrieved (top-k)** lists everything that was searched."
     )
 
     with gr.Row():
@@ -48,16 +52,25 @@ with gr.Blocks(title="QML Unofficial Guide") as demo:
         cluster = gr.Dropdown(
             choices=CLUSTERS,
             value="all",
-            label="Filter by cluster (optional)",
+            label="Filter by cluster (semantic mode only)",
+            scale=1,
+        )
+        mode = gr.Radio(
+            choices=["semantic", "hybrid"],
+            value="semantic",
+            label="Retrieval mode",
             scale=1,
         )
 
     btn = gr.Button("Ask", variant="primary")
     answer = gr.Textbox(label="Answer", lines=10)
-    sources = gr.Textbox(label="Retrieved from", lines=4)
+    with gr.Row():
+        sources_used = gr.Textbox(label="Cited by answer (verified)", lines=4)
+        sources_retrieved = gr.Textbox(label="Retrieved (top-k)", lines=4)
 
-    btn.click(handle_query, inputs=[inp, cluster], outputs=[answer, sources])
-    inp.submit(handle_query, inputs=[inp, cluster], outputs=[answer, sources])
+    outputs = [answer, sources_used, sources_retrieved]
+    btn.click(handle_query, inputs=[inp, cluster, mode], outputs=outputs)
+    inp.submit(handle_query, inputs=[inp, cluster, mode], outputs=outputs)
 
 
 if __name__ == "__main__":
